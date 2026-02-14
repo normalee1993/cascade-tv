@@ -103,7 +103,12 @@ Shows every series the script has processed, with Sonarr IDs and timestamps.
 ```bash
 docker exec media-automation python /app/media_automation.py reprocess <sonarr_id>
 ```
-Clears the series from the database and reprocesses it. Use this if monitoring got set wrong or you want to re-run the logic. Find the Sonarr ID from the `list` command or from the Sonarr URL (e.g., `http://sonarr:8989/series/supernatural` -> check the series detail page).
+Clears the series from the database and reprocesses it. Use this if monitoring got set wrong or you want to re-run the logic.
+
+**How to find the Sonarr ID:**
+1. **From the list command:** Run `docker exec media-automation python /app/media_automation.py list` to see all processed series with their IDs
+2. **From Sonarr UI:** Go to the series page in Sonarr and look at the URL - it will be `http://your-sonarr:8989/series/<series-name>`. Click on the series to open the detail page, then check the browser's address bar or network tab for the numeric ID
+3. **From Sonarr API:** Visit `http://your-sonarr:8989/api/v3/series?apikey=<your-api-key>` and search for your series in the JSON response - the `id` field is the Sonarr ID
 
 ### Manually Trigger a Full Run
 ```bash
