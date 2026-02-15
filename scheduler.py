@@ -34,10 +34,17 @@ SCRIPT_TIMEOUT = get_int_env("SCRIPT_TIMEOUT_MINUTES", 30) * 60
 PLAYBACK_CHECK_INTERVAL = get_int_env("PLAYBACK_CHECK_INTERVAL", 45)
 PLAYBACK_SCRIPT_TIMEOUT = get_int_env("PLAYBACK_SCRIPT_TIMEOUT", 600)
 
-# Separate locks for polling vs webhook vs playback processing
+# Trakt discovery
+TRAKT_DISCOVERY_ENABLED = os.getenv("TRAKT_DISCOVERY_ENABLED", "false").lower() == "true"
+TRAKT_DISCOVERY_INTERVAL_HOURS = get_int_env("TRAKT_DISCOVERY_INTERVAL_HOURS", 6)
+TRAKT_DISCOVERY_INTERVAL = TRAKT_DISCOVERY_INTERVAL_HOURS * 3600
+TRAKT_SCRIPT_TIMEOUT = get_int_env("TRAKT_SCRIPT_TIMEOUT", 300)
+
+# Separate locks for polling vs webhook vs playback vs trakt processing
 poll_lock = threading.Lock()
 webhook_lock = threading.Lock()
 playback_lock = threading.Lock()
+trakt_lock = threading.Lock()
 
 # Queue for webhook series that arrive while another webhook is processing
 pending_series = deque()
@@ -191,6 +198,32 @@ def start_webhook_server():
         log.error(f"Webhook server error: {e}", exc_info=True)
 
 
+def run_trakt_script(args=None):
+    """Run the Trakt discovery script."""
+    if not trakt_lock.acquire(blocking=False):
+        log.info("Trakt discovery already running, skipping")
+        return False
+
+    try:
+        cmd = [sys.executable, "/app/trakt_discovery.py"]
+        if args:
+            cmd.extend(args)
+        log.info(f"Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=False, text=True, timeout=TRAKT_SCRIPT_TIMEOUT)
+        if result.returncode != 0:
+            log.error(f"Trakt script exited with code {result.returncode}")
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        log.error(f"Trakt script timed out after {TRAKT_SCRIPT_TIMEOUT}s")
+        return False
+    except Exception as e:
+        log.error(f"Failed to run Trakt script: {e}", exc_info=True)
+        return False
+    finally:
+        trakt_lock.release()
+
+
 def playback_check_loop():
     """Background loop that checks for active playback every N seconds."""
     log.info(f"Playback check loop started (interval: {PLAYBACK_CHECK_INTERVAL}s)")
@@ -202,12 +235,28 @@ def playback_check_loop():
         time.sleep(PLAYBACK_CHECK_INTERVAL)
 
 
+def trakt_discovery_loop():
+    """Background loop that runs Trakt discovery every N hours."""
+    log.info(f"Trakt discovery loop started (interval: {TRAKT_DISCOVERY_INTERVAL_HOURS}h)")
+    # Initial delay to let other services start
+    time.sleep(60)
+    while True:
+        try:
+            run_trakt_script(["discover"])
+        except Exception as e:
+            log.error(f"Error in Trakt discovery loop: {e}", exc_info=True)
+        time.sleep(TRAKT_DISCOVERY_INTERVAL)
+
+
 def main():
     log.info(f"Media Automation Scheduler started")
     log.info(f"  Polling interval: {INTERVAL_MINUTES} minutes")
     log.info(f"  Webhook port: {WEBHOOK_PORT}")
     log.info(f"  Playback check interval: {PLAYBACK_CHECK_INTERVAL}s")
     log.info(f"  Script timeout: {SCRIPT_TIMEOUT}s")
+    log.info(f"  Trakt discovery: {'enabled' if TRAKT_DISCOVERY_ENABLED else 'disabled'}")
+    if TRAKT_DISCOVERY_ENABLED:
+        log.info(f"  Trakt discovery interval: {TRAKT_DISCOVERY_INTERVAL_HOURS}h")
 
     # Start webhook server in background
     webhook_thread = threading.Thread(target=start_webhook_server, daemon=True)
@@ -216,6 +265,11 @@ def main():
     # Start playback check loop in background
     playback_thread = threading.Thread(target=playback_check_loop, daemon=True)
     playback_thread.start()
+
+    # Start Trakt discovery loop if enabled
+    if TRAKT_DISCOVERY_ENABLED:
+        trakt_thread = threading.Thread(target=trakt_discovery_loop, daemon=True)
+        trakt_thread.start()
 
     # Run catch-up on first start
     if RUN_CATCHUP_ON_START:

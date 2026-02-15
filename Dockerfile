@@ -6,6 +6,7 @@ RUN pip install --no-cache-dir requests
 
 COPY media_automation.py /app/
 COPY scheduler.py /app/
+COPY trakt_discovery.py /app/
 
 RUN mkdir -p /data
 

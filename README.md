@@ -24,6 +24,59 @@ Every 45 seconds, the script checks Jellyfin's active sessions. If a user starts
 
 If someone requests every season of a show, the script treats it as: **Season 1 full + Episode 1 of the rest**. This prevents downloading 15 seasons of a show nobody has started watching yet.
 
+## Trakt Content Discovery
+
+Automatically discovers trending, popular, and recommended content via the Trakt API and requests it through Jellyseerr. TV shows request only Season 1 — the core automation's E01-preview logic handles progressive unlocking as people watch.
+
+### What it monitors
+- **Trending** — Currently most-watched shows and movies
+- **Popular** — All-time most popular
+- **Anticipated** — Most anticipated upcoming releases
+- **Recommended** — Personalized recommendations based on your Trakt watch history
+- **Watchlist** — Your Trakt watchlist
+
+### Filtering pipeline
+Each discovered item goes through these filters before being requested:
+1. **Already discovered** — Skips items seen in previous cycles
+2. **Already watched on Trakt** — Skips your complete watch history (import your Netflix/Amazon/etc. history to Trakt for best results)
+3. **Rating threshold** — Skips items below `TRAKT_MIN_RATING` (default: 7.0)
+4. **Vote threshold** — Skips items with fewer than `TRAKT_MIN_VOTES` (default: 100)
+5. **Already in Jellyseerr** — Skips items already requested or available
+6. **Request limit** — Stops after `TRAKT_MAX_REQUESTS_PER_CYCLE` (default: 10)
+
+### Setup
+1. Create a Trakt API application at https://trakt.tv/oauth/applications
+   - **Redirect URI:** `urn:ietf:wg:oauth:2.0:oob`
+   - **Permissions:** No special permissions needed (leave /checkin and /scrobble unchecked)
+2. Add your Client ID and Client Secret to `.env`
+3. Rebuild: `docker compose build && docker compose up -d`
+4. Authenticate: `docker exec media-automation python -u /app/trakt_discovery.py auth`
+5. Visit the URL displayed, enter the code
+6. Set `TRAKT_DISCOVERY_ENABLED=true` in `.env` and restart
+
+### Commands
+```bash
+# Authenticate with Trakt
+docker exec media-automation python -u /app/trakt_discovery.py auth
+
+# Check token and discovery stats
+docker exec media-automation python -u /app/trakt_discovery.py status
+
+# Dry run (see what would be requested without making changes)
+docker exec -e DRY_RUN=true media-automation python -u /app/trakt_discovery.py discover
+
+# Run discovery now
+docker exec media-automation python -u /app/trakt_discovery.py discover
+
+# Clear discovered items for a fresh start (keeps request log)
+docker exec media-automation python -u /app/trakt_discovery.py reset
+
+# Re-authenticate (clear tokens and start over)
+docker exec media-automation python -u /app/trakt_discovery.py reauth
+```
+
+---
+
 ## Setup
 
 ### 1. Configure Sonarr Webhook
@@ -72,6 +125,7 @@ All configuration is done via the `.env` file. See `.env.example` for a template
 | `JELLYFIN_API_KEY` | | Jellyfin API key |
 | `JELLYSEERR_URL` | Required | Jellyseerr server URL |
 | `JELLYSEERR_API_KEY` | | Jellyseerr API key (required to detect which season was requested) |
+| `JELLYSEERR_USER_ID` | | Jellyseerr user ID to attribute Trakt discovery requests to (see below) |
 | `JELLYFIN_USER_IDS` | | Comma-separated Jellyfin user IDs to monitor for watch progress |
 | `WATCH_THRESHOLD` | `0.75` | How much of a season must be watched before the next unlocks (0.75 = 75%) |
 | `RUN_INTERVAL_MINUTES` | `15` | How often the polling loop runs (in minutes) |
@@ -83,6 +137,38 @@ All configuration is done via the `.env` file. See `.env.example` for a template
 | `SABNZBD_URL` | Required | SABnzbd server URL |
 | `SABNZBD_API_KEY` | | SABnzbd API key (required for download priority management) |
 | `PLAYBACK_CHECK_INTERVAL` | `45` | How often to check for active playback (in seconds) |
+| `TRAKT_CLIENT_ID` | | Trakt API client ID (from https://trakt.tv/oauth/applications) |
+| `TRAKT_CLIENT_SECRET` | | Trakt API client secret |
+| `TRAKT_DISCOVERY_ENABLED` | `false` | Enable/disable automated Trakt discovery loop |
+| `TRAKT_DISCOVERY_INTERVAL_HOURS` | `6` | How often the discovery loop runs |
+| `TRAKT_DISCOVER_SHOWS` | `true` | Discover TV shows |
+| `TRAKT_DISCOVER_MOVIES` | `true` | Discover movies |
+| `TRAKT_LISTS` | `trending,popular,anticipated,recommended,watchlist` | Which Trakt lists to check |
+| `TRAKT_MIN_RATING` | `7.0` | Minimum Trakt rating to request |
+| `TRAKT_MIN_VOTES` | `100` | Minimum vote count to request |
+| `TRAKT_MAX_REQUESTS_PER_CYCLE` | `10` | Max new requests per discovery cycle |
+| `TRAKT_ITEMS_PER_LIST` | `20` | How many items to fetch per list |
+| `TRAKT_LANGUAGES` | `en` | Language filter |
+| `TRAKT_GENRES` | | Genre filter (comma-separated, leave empty for all) |
+| `TRAKT_YEARS` | | Year filter (e.g., `2020-2026`) |
+
+### Finding Your Jellyseerr User ID
+
+The `JELLYSEERR_USER_ID` setting controls which Jellyseerr user Trakt discovery requests are attributed to. This is useful if you use tools like Jellysweep that filter by request user.
+
+To find a user's ID, query the Jellyseerr API:
+```bash
+curl -s -H "X-Api-Key: YOUR_JELLYSEERR_API_KEY" "http://YOUR_JELLYSEERR_URL/api/v1/user" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for u in data.get('results', []):
+    print(f'  ID: {u[\"id\"]}, Name: {u.get(\"displayName\", \"?\")}, Email: {u.get(\"email\", \"?\")}')
+"
+```
+
+Set `JELLYSEERR_USER_ID` in your `.env` to the numeric ID of the desired user. If not set, requests use the API key owner (typically admin).
+
+---
 
 ## CLI Commands
 
