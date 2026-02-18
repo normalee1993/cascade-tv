@@ -1,10 +1,10 @@
 # Media Automation for Unraid
 
-Two-part automation system for a self-hosted media stack (Seerr + Sonarr/Radarr + Jellyfin + SABnzbd):
+Stop managing your media server manually. This system keeps your library stocked and your storage lean — automatically.
 
-**Smart download management** — When someone requests a show in Seerr, only the requested season is fully downloaded. Every other season gets just Episode 1 as a preview. As people watch, the next season is automatically unlocked: at 75% through a season, the next downloads in the background. If someone plays a preview episode, the full season is immediately prioritised in SABnzbd so E02 is ready before E01 finishes.
+**It discovers content for you.** Connects to Trakt to pull in trending, popular, and personalised recommendations for both TV shows and movies, then requests them through Seerr without any intervention. A multi-stage filter pipeline (rating, votes, year, genre, show status, episode count) ensures only quality content makes it through — and high-rated classics on your watchlist won't get silently dropped just because they're older or finished airing.
 
-**Automatic content discovery** — Connects to Trakt to find trending, popular, and personalised recommended content, then requests it through Seerr automatically. A configurable filtering pipeline (rating, votes, year, genre, show status, episode count) keeps the library focused. High-rated classics on your Trakt watchlist or recommendations can bypass year/status filters so nothing worth watching gets silently dropped.
+**It downloads only what you'll actually watch.** For TV shows, only the requested season is fully downloaded — every other season gets just Episode 1 as a preview. As people watch, the next season downloads automatically in the background. Start playing a preview episode and E02 jumps to Force priority in SABnzbd so it's ready before E01 is done. For movies, Seerr handles the full download as usual — discovery just removes the need to go looking for them yourself.
 
 ## How It Works
 
