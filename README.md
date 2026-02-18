@@ -47,6 +47,19 @@ Each discovered item goes through these filters before being requested:
 8. **Already in Seerr** — Skips items already requested or available
 9. **Request limit** — Stops after per-type limits (`TRAKT_MAX_SHOW_REQUESTS` / `TRAKT_MAX_MOVIE_REQUESTS`)
 
+### Premium Content Bypass
+
+High-rated content from personalised lists (`recommended`, `watchlist` by default) can bypass the year and show status filters. The original `TRAKT_MIN_RATING` floor still applies to everything — a show must clear 7.0 before bypass is even considered.
+
+**Example:** Breaking Bad (2008, Ended, rating 9.3) on your recommended list passes through even with `TRAKT_YEARS=2020-2026` and `TRAKT_ALLOWED_SHOW_STATUS=Returning Series`, because its 9.3 rating clears the 8.0 bypass bar.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TRAKT_PREMIUM_BYPASS_ENABLED` | `true` | Toggle the whole feature on/off |
+| `TRAKT_PREMIUM_BYPASS_MIN_RATING` | `8.0` | Minimum rating to qualify for bypass (above the normal 7.0 floor) |
+| `TRAKT_PREMIUM_BYPASS_LISTS` | `recommended,watchlist` | Comma-separated list sources that get the bypass |
+| `TRAKT_PREMIUM_BYPASS_FILTERS` | `year,status` | Which filters are bypassable: `year`, `status`, or `year,status` |
+
 ### Setup
 1. Create a Trakt API application at https://trakt.tv/oauth/applications
    - **Redirect URI:** `urn:ietf:wg:oauth:2.0:oob`
@@ -162,6 +175,10 @@ All configuration is done via the `.env` file. See `.env.example` for a template
 | `TRAKT_ALLOWED_SHOW_STATUS` | | Only allow shows with these statuses (e.g., `Returning Series,In Production,Planned`) |
 | `TRAKT_ALLOWED_RATINGS` | | Only allow these content ratings (e.g., `TV-14,TV-MA,PG-13,R`) |
 | `TRAKT_EXCLUDE_RATINGS` | | Exclude these content ratings (e.g., `TV-Y,TV-Y7,G`) |
+| `TRAKT_PREMIUM_BYPASS_ENABLED` | `true` | Allow high-rated content from configured lists to bypass year/status filters |
+| `TRAKT_PREMIUM_BYPASS_MIN_RATING` | `8.0` | Minimum rating to qualify for bypass |
+| `TRAKT_PREMIUM_BYPASS_LISTS` | `recommended,watchlist` | List sources eligible for bypass |
+| `TRAKT_PREMIUM_BYPASS_FILTERS` | `year,status` | Which filters the bypass can override (`year`, `status`, or both) |
 
 ### Finding Your Seerr User ID
 

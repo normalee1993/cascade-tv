@@ -86,6 +86,12 @@ TRAKT_ALLOWED_SHOW_STATUS = [s.strip() for s in os.getenv("TRAKT_ALLOWED_SHOW_ST
 TRAKT_ALLOWED_RATINGS = [r.strip() for r in os.getenv("TRAKT_ALLOWED_RATINGS", "").split(",") if r.strip()]
 TRAKT_EXCLUDE_RATINGS = [r.strip() for r in os.getenv("TRAKT_EXCLUDE_RATINGS", "").split(",") if r.strip()]
 
+# Premium content bypass (override year + show status filters for high-rated content)
+TRAKT_PREMIUM_BYPASS_ENABLED = os.getenv("TRAKT_PREMIUM_BYPASS_ENABLED", "true").lower() == "true"
+TRAKT_PREMIUM_BYPASS_MIN_RATING = get_float_env("TRAKT_PREMIUM_BYPASS_MIN_RATING", 8.0)
+TRAKT_PREMIUM_BYPASS_LISTS = [s.strip() for s in os.getenv("TRAKT_PREMIUM_BYPASS_LISTS", "recommended,watchlist").split(",") if s.strip()]
+TRAKT_PREMIUM_BYPASS_FILTERS = [s.strip() for s in os.getenv("TRAKT_PREMIUM_BYPASS_FILTERS", "year,status").split(",") if s.strip()]
+
 # Seerr
 SEERR_URL = os.getenv("SEERR_URL", "")
 SEERR_API_KEY = os.getenv("SEERR_API_KEY", "")
@@ -97,6 +103,24 @@ DB_PATH = os.getenv("DB_PATH", "/data/media_automation.db")
 
 # Dry run
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
+
+# ============================================================
+# HELPERS
+# ============================================================
+def qualifies_for_premium_bypass(source, rating, filter_type):
+    """Returns True if this item should bypass a specific filter due to high rating.
+    filter_type: 'year' or 'status'
+    """
+    if not TRAKT_PREMIUM_BYPASS_ENABLED:
+        return False
+    if filter_type not in TRAKT_PREMIUM_BYPASS_FILTERS:
+        return False
+    if source not in TRAKT_PREMIUM_BYPASS_LISTS:
+        return False
+    if not rating or rating < TRAKT_PREMIUM_BYPASS_MIN_RATING:
+        return False
+    return True
+
 
 # ============================================================
 # API HELPERS
@@ -723,13 +747,19 @@ def process_discovered_item(conn, item, media_type, source, request_count, max_r
     year = info.get("year")
     if year:
         if TRAKT_YEAR_MIN and year < TRAKT_YEAR_MIN:
-            log.debug(f"Skipping '{title}' — year {year} < {TRAKT_YEAR_MIN}")
-            record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_year", rating)
-            return request_count
+            if qualifies_for_premium_bypass(source, rating, "year"):
+                log.debug(f"'{title}' ({year}) — year below threshold but premium bypass applies [{rating:.1f}]")
+            else:
+                log.debug(f"Skipping '{title}' — year {year} < {TRAKT_YEAR_MIN}")
+                record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_year", rating)
+                return request_count
         if TRAKT_YEAR_MAX and year > TRAKT_YEAR_MAX:
-            log.debug(f"Skipping '{title}' — year {year} > {TRAKT_YEAR_MAX}")
-            record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_year", rating)
-            return request_count
+            if qualifies_for_premium_bypass(source, rating, "year"):
+                log.debug(f"'{title}' ({year}) — year above threshold but premium bypass applies [{rating:.1f}]")
+            else:
+                log.debug(f"Skipping '{title}' — year {year} > {TRAKT_YEAR_MAX}")
+                record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_year", rating)
+                return request_count
 
     # Skip if genre is excluded
     if TRAKT_EXCLUDE_GENRES and info.get("genres"):
@@ -742,8 +772,11 @@ def process_discovered_item(conn, item, media_type, source, request_count, max_r
     # TMDB-based filters (episode count, show status, content rating)
     passed, skip_reason = check_tmdb_filters(media_type, tmdb_id, title)
     if not passed:
-        record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, skip_reason, rating)
-        return request_count
+        if skip_reason == "skipped_show_status" and qualifies_for_premium_bypass(source, rating, "status"):
+            log.debug(f"'{title}' — show status filtered but premium bypass applies [{rating:.1f}]")
+        else:
+            record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, skip_reason, rating)
+            return request_count
 
     # Check if already in Seerr
     if check_seerr_status(media_type, tmdb_id):
