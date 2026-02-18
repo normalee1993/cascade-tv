@@ -1,12 +1,12 @@
 # Media Automation for Unraid
 
-Automatically manages TV show downloads by connecting Jellyseerr, Sonarr, Jellyfin, and SABnzbd. Instead of downloading entire series when someone makes a request, it downloads only what's needed and progressively unlocks more as people watch. When playback is detected or watch thresholds are met, downloads are automatically prioritized in SABnzbd so the next episodes are ready in time.
+Automatically manages TV show downloads by connecting Seerr, Sonarr, Jellyfin, and SABnzbd. Instead of downloading entire series when someone makes a request, it downloads only what's needed and progressively unlocks more as people watch. When playback is detected or watch thresholds are met, downloads are automatically prioritized in SABnzbd so the next episodes are ready in time.
 
 ## How It Works
 
-### When someone requests a show in Jellyseerr
+### When someone requests a show in Seerr
 
-1. Jellyseerr tells Sonarr to add the series (Sonarr monitors ALL episodes by default)
+1. Seerr tells Sonarr to add the series (Sonarr monitors ALL episodes by default)
 2. This script intercepts the Sonarr webhook and immediately fixes the monitoring:
    - **Requested season(s)**: All episodes downloaded
    - **Every other season**: Only Episode 1 downloaded (as a preview)
@@ -26,7 +26,7 @@ If someone requests every season of a show, the script treats it as: **Season 1 
 
 ## Trakt Content Discovery
 
-Automatically discovers trending, popular, and recommended content via the Trakt API and requests it through Jellyseerr. TV shows request only Season 1 — the core automation's E01-preview logic handles progressive unlocking as people watch.
+Automatically discovers trending, popular, and recommended content via the Trakt API and requests it through Seerr. TV shows request only Season 1 — the core automation's E01-preview logic handles progressive unlocking as people watch.
 
 ### What it monitors
 - **Trending** — Currently most-watched shows and movies
@@ -41,8 +41,11 @@ Each discovered item goes through these filters before being requested:
 2. **Already watched on Trakt** — Skips your complete watch history (import your Netflix/Amazon/etc. history to Trakt for best results)
 3. **Rating threshold** — Skips items below `TRAKT_MIN_RATING` (default: 7.0)
 4. **Vote threshold** — Skips items with fewer than `TRAKT_MIN_VOTES` (default: 100)
-5. **Already in Jellyseerr** — Skips items already requested or available
-6. **Request limit** — Stops after `TRAKT_MAX_REQUESTS_PER_CYCLE` (default: 10)
+5. **Year filter** — Skips items outside `TRAKT_YEARS` range (backup for API-level filter that some list types ignore)
+6. **Genre exclusion** — Skips items matching `TRAKT_EXCLUDE_GENRES` (e.g., `animation,reality,talk-show`)
+7. **TMDB filters** (optional, requires `TMDB_API_KEY`) — Episode count (`TRAKT_MAX_EPISODES`), show status (`TRAKT_ALLOWED_SHOW_STATUS`), content rating (`TRAKT_ALLOWED_RATINGS` / `TRAKT_EXCLUDE_RATINGS`)
+8. **Already in Seerr** — Skips items already requested or available
+9. **Request limit** — Stops after per-type limits (`TRAKT_MAX_SHOW_REQUESTS` / `TRAKT_MAX_MOVIE_REQUESTS`)
 
 ### Setup
 1. Create a Trakt API application at https://trakt.tv/oauth/applications
@@ -92,7 +95,7 @@ In Sonarr, go to **Settings > Connect > Add > Webhook**:
 |---------|-----------------|
 | Sonarr | Settings > General > API Key |
 | Jellyfin | Dashboard > API Keys > Create |
-| Jellyseerr | Settings > General > API Key |
+| Seerr | Settings > General > API Key |
 | SABnzbd | Config > General > API Key |
 | Jellyfin User IDs | Dashboard > Users > click user > ID is in the URL |
 
@@ -123,9 +126,9 @@ All configuration is done via the `.env` file. See `.env.example` for a template
 | `SONARR_API_KEY` | | Sonarr API key |
 | `JELLYFIN_URL` | Required | Jellyfin server URL |
 | `JELLYFIN_API_KEY` | | Jellyfin API key |
-| `JELLYSEERR_URL` | Required | Jellyseerr server URL |
-| `JELLYSEERR_API_KEY` | | Jellyseerr API key (required to detect which season was requested) |
-| `JELLYSEERR_USER_ID` | | Jellyseerr user ID to attribute Trakt discovery requests to (see below) |
+| `SEERR_URL` | Required | Seerr server URL |
+| `SEERR_API_KEY` | | Seerr API key (required to detect which season was requested) |
+| `SEERR_USER_ID` | | Seerr user ID to attribute Trakt discovery requests to (see below) |
 | `JELLYFIN_USER_IDS` | | Comma-separated Jellyfin user IDs to monitor for watch progress |
 | `WATCH_THRESHOLD` | `0.75` | How much of a season must be watched before the next unlocks (0.75 = 75%) |
 | `RUN_INTERVAL_MINUTES` | `15` | How often the polling loop runs (in minutes) |
@@ -143,22 +146,30 @@ All configuration is done via the `.env` file. See `.env.example` for a template
 | `TRAKT_DISCOVERY_INTERVAL_HOURS` | `6` | How often the discovery loop runs |
 | `TRAKT_DISCOVER_SHOWS` | `true` | Discover TV shows |
 | `TRAKT_DISCOVER_MOVIES` | `true` | Discover movies |
-| `TRAKT_LISTS` | `trending,popular,anticipated,recommended,watchlist` | Which Trakt lists to check |
+| `TRAKT_LISTS` | `recommended,watchlist,trending,popular,anticipated` | Which Trakt lists to check (processed in order; personalized lists first ensures they get priority) |
 | `TRAKT_MIN_RATING` | `7.0` | Minimum Trakt rating to request |
 | `TRAKT_MIN_VOTES` | `100` | Minimum vote count to request |
-| `TRAKT_MAX_REQUESTS_PER_CYCLE` | `10` | Max new requests per discovery cycle |
+| `TRAKT_MAX_REQUESTS_PER_CYCLE` | `10` | Max new requests per discovery cycle (split evenly between shows/movies if per-type limits not set) |
+| `TRAKT_MAX_SHOW_REQUESTS` | | Max show requests per cycle (overrides even split) |
+| `TRAKT_MAX_MOVIE_REQUESTS` | | Max movie requests per cycle (overrides even split) |
 | `TRAKT_ITEMS_PER_LIST` | `20` | How many items to fetch per list |
 | `TRAKT_LANGUAGES` | `en` | Language filter |
-| `TRAKT_GENRES` | | Genre filter (comma-separated, leave empty for all) |
-| `TRAKT_YEARS` | | Year filter (e.g., `2020-2026`) |
+| `TRAKT_GENRES` | | Genre inclusion filter (comma-separated, leave empty for all) |
+| `TRAKT_EXCLUDE_GENRES` | | Genre exclusion filter (comma-separated, e.g., `animation,reality,talk-show`) |
+| `TRAKT_YEARS` | | Year filter (e.g., `2020-2026`) — applied at both API and application level |
+| `TMDB_API_KEY` | | TMDB API key (enables episode count, show status, and content rating filters) |
+| `TRAKT_MAX_EPISODES` | `0` | Skip shows with more than this many episodes (0 = disabled, requires `TMDB_API_KEY`) |
+| `TRAKT_ALLOWED_SHOW_STATUS` | | Only allow shows with these statuses (e.g., `Returning Series,In Production,Planned`) |
+| `TRAKT_ALLOWED_RATINGS` | | Only allow these content ratings (e.g., `TV-14,TV-MA,PG-13,R`) |
+| `TRAKT_EXCLUDE_RATINGS` | | Exclude these content ratings (e.g., `TV-Y,TV-Y7,G`) |
 
-### Finding Your Jellyseerr User ID
+### Finding Your Seerr User ID
 
-The `JELLYSEERR_USER_ID` setting controls which Jellyseerr user Trakt discovery requests are attributed to. This is useful if you use tools like Jellysweep that filter by request user.
+The `SEERR_USER_ID` setting controls which Seerr user Trakt discovery requests are attributed to. This is useful if you use tools like Jellysweep that filter by request user.
 
-To find a user's ID, query the Jellyseerr API:
+To find a user's ID, query the Seerr API:
 ```bash
-curl -s -H "X-Api-Key: YOUR_JELLYSEERR_API_KEY" "http://YOUR_JELLYSEERR_URL/api/v1/user" | python3 -c "
+curl -s -H "X-Api-Key: YOUR_SEERR_API_KEY" "http://YOUR_SEERR_URL/api/v1/user" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 for u in data.get('results', []):
@@ -166,7 +177,7 @@ for u in data.get('results', []):
 "
 ```
 
-Set `JELLYSEERR_USER_ID` in your `.env` to the numeric ID of the desired user. If not set, requests use the API key owner (typically admin).
+Set `SEERR_USER_ID` in your `.env` to the numeric ID of the desired user. If not set, requests use the API key owner (typically admin).
 
 ---
 
@@ -206,7 +217,7 @@ Runs the full polling cycle immediately: checks for new series, checks watch pro
 ```bash
 docker exec media-automation python /app/media_automation.py webhook <sonarr_id>
 ```
-Processes a single series as if it just arrived via webhook. Queries Jellyseerr for the requested season(s) and sets monitoring accordingly.
+Processes a single series as if it just arrived via webhook. Queries Seerr for the requested season(s) and sets monitoring accordingly.
 
 ### Check Active Playback
 ```bash
@@ -250,15 +261,15 @@ The database auto-cleans entries for series that no longer exist in Sonarr (e.g.
 ## Troubleshooting
 
 **Show downloaded all seasons instead of just the requested one**
-- Check that `JELLYSEERR_API_KEY` is set. Without it, the script can't determine which season was requested and falls back to Season 1.
-- Check logs for "Jellyseerr: Found request for..." to verify the lookup worked.
+- Check that `SEERR_API_KEY` is set. Without it, the script can't determine which season was requested and falls back to Season 1.
+- Check logs for "Seerr: Found request for..." to verify the lookup worked.
 
 **Webhook was skipped**
 - Look for "Script already running, skipping" in the logs. This only happens for polling runs, not webhooks. Webhooks have their own queue and will wait for each other.
 - The series will still be picked up on the next 15-minute poll cycle.
 
 **Want to change what season is fully monitored**
-- Use the `reprocess` command after adjusting the request in Jellyseerr.
+- Use the `reprocess` command after adjusting the request in Seerr.
 
 **Watch progress not triggering next season**
 - Verify the user's Jellyfin ID is in `JELLYFIN_USER_IDS`.

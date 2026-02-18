@@ -2,7 +2,7 @@
 """
 Trakt Content Discovery for cascade-tv
 - Discovers trending, popular, anticipated, and recommended content via Trakt
-- Requests discovered content through Jellyseerr (TV → Sonarr, Movies → Radarr)
+- Requests discovered content through Seerr (TV → Sonarr, Movies → Radarr)
 - TV shows request Season 1 only — cascade-tv's E01-preview logic handles the rest
 - OAuth device code flow for Trakt authentication
 """
@@ -53,20 +53,44 @@ TRAKT_DISCOVERY_ENABLED = os.getenv("TRAKT_DISCOVERY_ENABLED", "false").lower() 
 TRAKT_DISCOVERY_INTERVAL_HOURS = get_int_env("TRAKT_DISCOVERY_INTERVAL_HOURS", 6)
 TRAKT_DISCOVER_SHOWS = os.getenv("TRAKT_DISCOVER_SHOWS", "true").lower() == "true"
 TRAKT_DISCOVER_MOVIES = os.getenv("TRAKT_DISCOVER_MOVIES", "true").lower() == "true"
-TRAKT_LISTS = [s.strip() for s in os.getenv("TRAKT_LISTS", "trending,popular,anticipated").split(",") if s.strip()]
+TRAKT_LISTS = [s.strip() for s in os.getenv("TRAKT_LISTS", "recommended,watchlist,trending,popular,anticipated").split(",") if s.strip()]
 TRAKT_MIN_RATING = get_float_env("TRAKT_MIN_RATING", 7.0)
 TRAKT_MIN_VOTES = get_int_env("TRAKT_MIN_VOTES", 100)
 TRAKT_YEARS = os.getenv("TRAKT_YEARS", "").strip()
 TRAKT_GENRES = os.getenv("TRAKT_GENRES", "").strip()
 TRAKT_LANGUAGES = os.getenv("TRAKT_LANGUAGES", "en").strip()
 TRAKT_MAX_REQUESTS_PER_CYCLE = get_int_env("TRAKT_MAX_REQUESTS_PER_CYCLE", 10)
+TRAKT_MAX_SHOW_REQUESTS = get_int_env("TRAKT_MAX_SHOW_REQUESTS", 0)  # 0 = use TRAKT_MAX_REQUESTS_PER_CYCLE
+TRAKT_MAX_MOVIE_REQUESTS = get_int_env("TRAKT_MAX_MOVIE_REQUESTS", 0)  # 0 = use TRAKT_MAX_REQUESTS_PER_CYCLE
 TRAKT_ITEMS_PER_LIST = get_int_env("TRAKT_ITEMS_PER_LIST", 20)
 
-# Jellyseerr
-JELLYSEERR_URL = os.getenv("JELLYSEERR_URL", "")
-JELLYSEERR_API_KEY = os.getenv("JELLYSEERR_API_KEY", "")
-JELLYSEERR_HEADERS = {"X-Api-Key": JELLYSEERR_API_KEY, "Content-Type": "application/json"}
-JELLYSEERR_USER_ID = get_int_env("JELLYSEERR_USER_ID", 0)  # Jellyseerr user ID to attribute requests to
+# Parse year range for application-level filtering (backup for API-level filter)
+TRAKT_YEAR_MIN = None
+TRAKT_YEAR_MAX = None
+if TRAKT_YEARS:
+    _year_parts = TRAKT_YEARS.split("-")
+    try:
+        TRAKT_YEAR_MIN = int(_year_parts[0])
+        if len(_year_parts) > 1:
+            TRAKT_YEAR_MAX = int(_year_parts[1])
+    except ValueError:
+        log.error(f"Invalid TRAKT_YEARS='{TRAKT_YEARS}', expected format: 2020-2026")
+
+# Genre exclusion (separate from TRAKT_GENRES inclusion filter)
+TRAKT_EXCLUDE_GENRES = [g.strip().lower() for g in os.getenv("TRAKT_EXCLUDE_GENRES", "").split(",") if g.strip()]
+
+# TMDB (optional — enables episode count, show status, and content rating filters)
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "")
+TRAKT_MAX_EPISODES = get_int_env("TRAKT_MAX_EPISODES", 0)  # 0 = disabled
+TRAKT_ALLOWED_SHOW_STATUS = [s.strip() for s in os.getenv("TRAKT_ALLOWED_SHOW_STATUS", "").split(",") if s.strip()]
+TRAKT_ALLOWED_RATINGS = [r.strip() for r in os.getenv("TRAKT_ALLOWED_RATINGS", "").split(",") if r.strip()]
+TRAKT_EXCLUDE_RATINGS = [r.strip() for r in os.getenv("TRAKT_EXCLUDE_RATINGS", "").split(",") if r.strip()]
+
+# Seerr
+SEERR_URL = os.getenv("SEERR_URL", "")
+SEERR_API_KEY = os.getenv("SEERR_API_KEY", "")
+SEERR_HEADERS = {"X-Api-Key": SEERR_API_KEY, "Content-Type": "application/json"}
+SEERR_USER_ID = get_int_env("SEERR_USER_ID", 0)  # Seerr user ID to attribute requests to
 
 # Database
 DB_PATH = os.getenv("DB_PATH", "/data/media_automation.db")
@@ -152,14 +176,123 @@ def trakt_post(endpoint, data=None, headers_override=None):
     return _api_request_with_retry(requests.post, f"{TRAKT_BASE_URL}{endpoint}", headers, json=data)
 
 
-def jellyseerr_get(endpoint):
-    """GET request to Jellyseerr API."""
-    return _api_request_with_retry(requests.get, f"{JELLYSEERR_URL}/api/v1{endpoint}", JELLYSEERR_HEADERS)
+def seerr_get(endpoint):
+    """GET request to Seerr API."""
+    return _api_request_with_retry(requests.get, f"{SEERR_URL}/api/v1{endpoint}", SEERR_HEADERS)
 
 
-def jellyseerr_post(endpoint, data):
-    """POST request to Jellyseerr API."""
-    return _api_request_with_retry(requests.post, f"{JELLYSEERR_URL}/api/v1{endpoint}", JELLYSEERR_HEADERS, json=data)
+def seerr_post(endpoint, data):
+    """POST request to Seerr API."""
+    return _api_request_with_retry(requests.post, f"{SEERR_URL}/api/v1{endpoint}", SEERR_HEADERS, json=data)
+
+
+# ============================================================
+# TMDB HELPERS (optional — episode count, status, rating filters)
+# ============================================================
+_tmdb_cache = {}
+
+
+def tmdb_get(endpoint, params=None):
+    """GET request to TMDB API."""
+    if not TMDB_API_KEY:
+        return None
+    url = f"https://api.themoviedb.org/3{endpoint}"
+    headers = {"Content-Type": "application/json"}
+    if params is None:
+        params = {}
+    params["api_key"] = TMDB_API_KEY
+    return _api_request_with_retry(requests.get, url, headers, params=params)
+
+
+def fetch_tmdb_details(media_type, tmdb_id):
+    """Fetch TMDB details with caching. Returns dict or None."""
+    cache_key = f"{media_type}:{tmdb_id}"
+    if cache_key in _tmdb_cache:
+        return _tmdb_cache[cache_key]
+
+    if media_type == "show":
+        endpoint = f"/tv/{tmdb_id}"
+        params = {"append_to_response": "content_ratings"}
+    else:
+        endpoint = f"/movie/{tmdb_id}"
+        params = {"append_to_response": "release_dates"}
+
+    try:
+        data = tmdb_get(endpoint, params=params)
+        _tmdb_cache[cache_key] = data
+        return data
+    except Exception as e:
+        log.debug(f"TMDB fetch failed for {media_type} {tmdb_id}: {e}")
+        _tmdb_cache[cache_key] = None
+        return None
+
+
+def get_tmdb_content_rating(tmdb_data, media_type):
+    """Extract US content rating from TMDB data."""
+    if not tmdb_data:
+        return None
+
+    if media_type == "show":
+        ratings = tmdb_data.get("content_ratings", {}).get("results", [])
+        for r in ratings:
+            if r.get("iso_3166_1") == "US":
+                return r.get("rating")
+    else:
+        release_dates = tmdb_data.get("release_dates", {}).get("results", [])
+        for country in release_dates:
+            if country.get("iso_3166_1") == "US":
+                for release in country.get("release_dates", []):
+                    cert = release.get("certification")
+                    if cert:
+                        return cert
+    return None
+
+
+def check_tmdb_filters(media_type, tmdb_id, title):
+    """Check TMDB-based filters (episode count, show status, content rating).
+    Returns (passed, skip_reason) tuple."""
+    if not TMDB_API_KEY:
+        return True, None
+
+    has_tmdb_filters = (
+        TRAKT_MAX_EPISODES > 0
+        or TRAKT_ALLOWED_SHOW_STATUS
+        or TRAKT_ALLOWED_RATINGS
+        or TRAKT_EXCLUDE_RATINGS
+    )
+    if not has_tmdb_filters:
+        return True, None
+
+    tmdb_data = fetch_tmdb_details(media_type, tmdb_id)
+    if not tmdb_data:
+        return True, None  # Gracefully skip if TMDB data unavailable
+
+    # Episode count filter (shows only)
+    if media_type == "show" and TRAKT_MAX_EPISODES > 0:
+        episode_count = tmdb_data.get("number_of_episodes", 0)
+        if episode_count > TRAKT_MAX_EPISODES:
+            log.debug(f"Skipping '{title}' — {episode_count} episodes > {TRAKT_MAX_EPISODES}")
+            return False, "skipped_too_many_episodes"
+
+    # Show status filter (shows only)
+    if media_type == "show" and TRAKT_ALLOWED_SHOW_STATUS:
+        status = tmdb_data.get("status", "")
+        if status and status not in TRAKT_ALLOWED_SHOW_STATUS:
+            log.debug(f"Skipping '{title}' — status '{status}' not in allowed: {TRAKT_ALLOWED_SHOW_STATUS}")
+            return False, "skipped_show_status"
+
+    # Content rating filter
+    if TRAKT_ALLOWED_RATINGS or TRAKT_EXCLUDE_RATINGS:
+        rating = get_tmdb_content_rating(tmdb_data, media_type)
+        if rating:
+            if TRAKT_ALLOWED_RATINGS and rating not in TRAKT_ALLOWED_RATINGS:
+                log.debug(f"Skipping '{title}' — rating '{rating}' not in allowed: {TRAKT_ALLOWED_RATINGS}")
+                return False, "skipped_content_rating"
+            if TRAKT_EXCLUDE_RATINGS and rating in TRAKT_EXCLUDE_RATINGS:
+                log.debug(f"Skipping '{title}' — rating '{rating}' is excluded")
+                return False, "skipped_content_rating"
+
+    return True, None
 
 
 # ============================================================
@@ -438,6 +571,7 @@ def extract_item_info(item, media_type, list_type):
         "year": media.get("year"),
         "rating": media.get("rating", 0),
         "votes": media.get("votes", 0),
+        "genres": [g.lower() for g in media.get("genres", [])],
     }
 
 
@@ -450,14 +584,14 @@ def is_already_discovered(conn, media_type, trakt_id):
     return row is not None
 
 
-def check_jellyseerr_status(media_type, tmdb_id):
-    """Check if media already exists or is requested in Jellyseerr. Returns True if available/requested."""
+def check_seerr_status(media_type, tmdb_id):
+    """Check if media already exists or is requested in Seerr. Returns True if available/requested."""
     endpoint = f"/{'tv' if media_type == 'show' else 'movie'}/{tmdb_id}"
     try:
-        data = jellyseerr_get(endpoint)
+        data = seerr_get(endpoint)
         if data is None:
             return False
-        # Jellyseerr mediaInfo.status: 1=unknown, 2=pending, 3=processing, 4=partially_available, 5=available
+        # Seerr mediaInfo.status: 1=unknown, 2=pending, 3=processing, 4=partially_available, 5=available
         media_info = data.get("mediaInfo")
         if media_info:
             status = media_info.get("status", 1)
@@ -467,42 +601,42 @@ def check_jellyseerr_status(media_type, tmdb_id):
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 404:
             return False
-        log.warning(f"Jellyseerr status check failed for {media_type} TMDB:{tmdb_id}: {e}")
+        log.warning(f"Seerr status check failed for {media_type} TMDB:{tmdb_id}: {e}")
         return False
     except Exception as e:
-        log.warning(f"Jellyseerr status check error for {media_type} TMDB:{tmdb_id}: {e}")
+        log.warning(f"Seerr status check error for {media_type} TMDB:{tmdb_id}: {e}")
         return False
 
 
-def request_via_jellyseerr(media_type, tmdb_id, title):
-    """Request content through Jellyseerr. Returns True if successful."""
+def request_via_seerr(media_type, tmdb_id, title):
+    """Request content through Seerr. Returns True if successful."""
     if media_type == "show":
         payload = {"mediaType": "tv", "mediaId": tmdb_id, "seasons": [1]}
     else:
         payload = {"mediaType": "movie", "mediaId": tmdb_id}
 
-    if JELLYSEERR_USER_ID:
-        payload["userId"] = JELLYSEERR_USER_ID
+    if SEERR_USER_ID:
+        payload["userId"] = SEERR_USER_ID
 
     if DRY_RUN:
-        log.info(f"[DRY RUN] Would request {media_type} '{title}' (TMDB:{tmdb_id}) via Jellyseerr")
+        log.info(f"[DRY RUN] Would request {media_type} '{title}' (TMDB:{tmdb_id}) via Seerr")
         return True
 
     try:
-        result = jellyseerr_post("/request", payload)
+        result = seerr_post("/request", payload)
         if result:
             season_info = " (Season 1)" if media_type == "show" else ""
-            log.info(f"Requested {media_type} '{title}'{season_info} via Jellyseerr (TMDB:{tmdb_id})")
+            log.info(f"Requested {media_type} '{title}'{season_info} via Seerr (TMDB:{tmdb_id})")
             return True
         return False
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 409:
             log.info(f"Already requested: '{title}' (TMDB:{tmdb_id})")
             return False
-        log.error(f"Jellyseerr request failed for '{title}': {e}")
+        log.error(f"Seerr request failed for '{title}': {e}")
         return False
     except Exception as e:
-        log.error(f"Jellyseerr request error for '{title}': {e}")
+        log.error(f"Seerr request error for '{title}': {e}")
         return False
 
 
@@ -582,12 +716,38 @@ def process_discovered_item(conn, item, media_type, source, request_count, max_r
     # Skip if below vote threshold
     if votes and votes < TRAKT_MIN_VOTES:
         log.debug(f"Skipping '{title}' — {votes} votes < {TRAKT_MIN_VOTES}")
-        record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_rating", rating)
+        record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_votes", rating)
         return request_count
 
-    # Check if already in Jellyseerr
-    if check_jellyseerr_status(media_type, tmdb_id):
-        log.debug(f"Skipping '{title}' — already in Jellyseerr")
+    # Skip if outside year range
+    year = info.get("year")
+    if year:
+        if TRAKT_YEAR_MIN and year < TRAKT_YEAR_MIN:
+            log.debug(f"Skipping '{title}' — year {year} < {TRAKT_YEAR_MIN}")
+            record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_year", rating)
+            return request_count
+        if TRAKT_YEAR_MAX and year > TRAKT_YEAR_MAX:
+            log.debug(f"Skipping '{title}' — year {year} > {TRAKT_YEAR_MAX}")
+            record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_year", rating)
+            return request_count
+
+    # Skip if genre is excluded
+    if TRAKT_EXCLUDE_GENRES and info.get("genres"):
+        matched_genres = [g for g in info["genres"] if g in TRAKT_EXCLUDE_GENRES]
+        if matched_genres:
+            log.debug(f"Skipping '{title}' — excluded genre(s): {', '.join(matched_genres)}")
+            record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_genre", rating)
+            return request_count
+
+    # TMDB-based filters (episode count, show status, content rating)
+    passed, skip_reason = check_tmdb_filters(media_type, tmdb_id, title)
+    if not passed:
+        record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, skip_reason, rating)
+        return request_count
+
+    # Check if already in Seerr
+    if check_seerr_status(media_type, tmdb_id):
+        log.debug(f"Skipping '{title}' — already in Seerr")
         record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "skipped_exists", rating)
         return request_count
 
@@ -596,8 +756,8 @@ def process_discovered_item(conn, item, media_type, source, request_count, max_r
         log.info(f"Request limit reached ({max_requests}), stopping")
         return request_count
 
-    # Request via Jellyseerr
-    if request_via_jellyseerr(media_type, tmdb_id, title):
+    # Request via Seerr
+    if request_via_seerr(media_type, tmdb_id, title):
         record_discovered(conn, media_type, trakt_id, tmdb_id, title, source, "requested", rating)
         record_request(conn, media_type, tmdb_id, title, source)
         request_count += 1
@@ -616,8 +776,8 @@ def discover_content(conn):
         log.error("TRAKT_CLIENT_ID not set. Cannot discover content.")
         return
 
-    if not JELLYSEERR_URL or not JELLYSEERR_API_KEY:
-        log.error("JELLYSEERR_URL and JELLYSEERR_API_KEY required for content requests.")
+    if not SEERR_URL or not SEERR_API_KEY:
+        log.error("SEERR_URL and SEERR_API_KEY required for content requests.")
         return
 
     media_types = []
@@ -630,42 +790,65 @@ def discover_content(conn):
         log.warning("Neither shows nor movies enabled for discovery")
         return
 
-    log.info(f"Starting Trakt discovery cycle (lists: {TRAKT_LISTS}, types: {media_types}, max: {TRAKT_MAX_REQUESTS_PER_CYCLE})")
+    # Calculate per-type limits
+    if TRAKT_MAX_SHOW_REQUESTS or TRAKT_MAX_MOVIE_REQUESTS:
+        max_show = TRAKT_MAX_SHOW_REQUESTS if TRAKT_MAX_SHOW_REQUESTS else TRAKT_MAX_REQUESTS_PER_CYCLE
+        max_movie = TRAKT_MAX_MOVIE_REQUESTS if TRAKT_MAX_MOVIE_REQUESTS else TRAKT_MAX_REQUESTS_PER_CYCLE
+    else:
+        # Split evenly (backward compatible)
+        enabled_count = len(media_types)
+        per_type = TRAKT_MAX_REQUESTS_PER_CYCLE // enabled_count if enabled_count else 0
+        max_show = per_type if "show" in media_types else 0
+        max_movie = per_type if "movie" in media_types else 0
+
+    if "show" not in media_types:
+        max_show = 0
+    if "movie" not in media_types:
+        max_movie = 0
+
+    type_limits = {"show": max_show, "movie": max_movie}
+    type_counts = {"show": 0, "movie": 0}
+
+    log.info(f"Starting Trakt discovery cycle (lists: {TRAKT_LISTS}, types: {media_types}, limits: shows={max_show}, movies={max_movie})")
     if DRY_RUN:
         log.info("[DRY RUN] No actual requests will be made")
+
+    # Clear TMDB cache for this cycle
+    _tmdb_cache.clear()
 
     # Fetch watch history to skip already-watched content
     watched_ids = fetch_watched_ids(conn)
 
-    request_count = 0
-
     for list_type in TRAKT_LISTS:
+        # Check if all limits reached
+        all_done = all(type_counts[mt] >= type_limits[mt] for mt in media_types)
+        if all_done:
+            break
+
         for media_type in media_types:
-            if request_count >= TRAKT_MAX_REQUESTS_PER_CYCLE:
-                log.info(f"Request limit reached ({TRAKT_MAX_REQUESTS_PER_CYCLE})")
-                break
+            if type_counts[media_type] >= type_limits[media_type]:
+                continue
 
             log.info(f"Fetching {list_type} {media_type}s...")
             items = fetch_list(conn, list_type, media_type)
             log.info(f"  Found {len(items)} items")
 
             for item in items:
-                if request_count >= TRAKT_MAX_REQUESTS_PER_CYCLE:
+                if type_counts[media_type] >= type_limits[media_type]:
                     break
                 try:
-                    request_count = process_discovered_item(
+                    type_counts[media_type] = process_discovered_item(
                         conn, item, media_type, list_type,
-                        request_count, TRAKT_MAX_REQUESTS_PER_CYCLE,
+                        type_counts[media_type], type_limits[media_type],
                         watched_ids=watched_ids
                     )
                 except Exception as e:
                     log.error(f"Error processing item: {e}", exc_info=True)
                     continue
 
-        if request_count >= TRAKT_MAX_REQUESTS_PER_CYCLE:
-            break
-
-    log.info(f"Discovery cycle complete: {request_count} new requests")
+    total = sum(type_counts.values())
+    parts = [f"{mt}s: {type_counts[mt]}/{type_limits[mt]}" for mt in media_types]
+    log.info(f"Discovery cycle complete: {total} new requests ({', '.join(parts)})")
 
 
 # ============================================================
