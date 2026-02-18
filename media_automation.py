@@ -3,7 +3,7 @@
 Media Automation for Unraid
 - Sets new TV shows to: Requested season full + Episode 1 of all other seasons
 - Monitors Jellyfin watch progress and auto-downloads next season at 75%
-- Queries Jellyseerr to determine which season was actually requested
+- Queries Seerr to determine which season was actually requested
 - Runs on a configurable schedule
 """
 
@@ -50,8 +50,8 @@ SONARR_API_KEY = os.getenv("SONARR_API_KEY", "")
 JELLYFIN_URL = os.getenv("JELLYFIN_URL", "")
 JELLYFIN_API_KEY = os.getenv("JELLYFIN_API_KEY", "")
 
-JELLYSEERR_URL = os.getenv("JELLYSEERR_URL", "")
-JELLYSEERR_API_KEY = os.getenv("JELLYSEERR_API_KEY", "")
+SEERR_URL = os.getenv("SEERR_URL", "")
+SEERR_API_KEY = os.getenv("SEERR_API_KEY", "")
 
 # Watch progress threshold (0.75 = 75% of season watched triggers next season download)
 WATCH_THRESHOLD = get_float_env("WATCH_THRESHOLD", 0.75)
@@ -81,7 +81,7 @@ DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 # ============================================================
 SONARR_HEADERS = {"X-Api-Key": SONARR_API_KEY, "Content-Type": "application/json"}
 JELLYFIN_HEADERS = {"X-Emby-Token": JELLYFIN_API_KEY, "Content-Type": "application/json"}
-JELLYSEERR_HEADERS = {"X-Api-Key": JELLYSEERR_API_KEY, "Content-Type": "application/json"}
+SEERR_HEADERS = {"X-Api-Key": SEERR_API_KEY, "Content-Type": "application/json"}
 
 def _api_request_with_retry(method, url, headers, max_retries=3, **kwargs):
     """Make API request with retry logic for transient failures."""
@@ -170,9 +170,9 @@ def jellyfin_get(endpoint, params=None):
     return _api_request_with_retry(requests.get, f"{JELLYFIN_URL}{endpoint}", JELLYFIN_HEADERS, params=params)
 
 
-def jellyseerr_get(endpoint, params=None):
-    """GET request to Jellyseerr API."""
-    return _api_request_with_retry(requests.get, f"{JELLYSEERR_URL}/api/v1{endpoint}", JELLYSEERR_HEADERS, params=params)
+def seerr_get(endpoint, params=None):
+    """GET request to Seerr API."""
+    return _api_request_with_retry(requests.get, f"{SEERR_URL}/api/v1{endpoint}", SEERR_HEADERS, params=params)
 
 
 # ============================================================
@@ -215,24 +215,24 @@ def sabnzbd_set_priority(nzo_id, priority):
 
 
 # ============================================================
-# JELLYSEERR INTEGRATION
+# SEERR INTEGRATION
 # ============================================================
-def get_requested_seasons_from_jellyseerr(tvdb_id, title):
-    """Query Jellyseerr to find which seasons were actually requested for a series."""
-    if not JELLYSEERR_API_KEY:
-        log.warning("  JELLYSEERR_API_KEY not set, cannot determine requested seasons")
+def get_requested_seasons_from_seerr(tvdb_id, title):
+    """Query Seerr to find which seasons were actually requested for a series."""
+    if not SEERR_API_KEY:
+        log.warning("  SEERR_API_KEY not set, cannot determine requested seasons")
         return None
 
     try:
-        # Search Jellyseerr requests (most recent first)
-        request_data = jellyseerr_get("/request", params={
+        # Search Seerr requests (most recent first)
+        request_data = seerr_get("/request", params={
             "take": 50,
             "skip": 0,
             "sort": "added",
         })
 
         if not request_data or "results" not in request_data:
-            log.warning("  No request data from Jellyseerr")
+            log.warning("  No request data from Seerr")
             return None
 
         # Find matching request by TVDB ID
@@ -252,11 +252,11 @@ def get_requested_seasons_from_jellyseerr(tvdb_id, title):
                         requested_seasons.add(sn)
 
                 if requested_seasons:
-                    log.info(f"  Jellyseerr: Found request for '{title}' - seasons {sorted(requested_seasons)}")
+                    log.info(f"  Seerr: Found request for '{title}' - seasons {sorted(requested_seasons)}")
                     return requested_seasons
                 else:
                     # Request exists but no specific seasons listed (e.g., "remaining seasons")
-                    log.info(f"  Jellyseerr: Found request for '{title}' but no specific seasons listed (treating as 'all remaining')")
+                    log.info(f"  Seerr: Found request for '{title}' but no specific seasons listed (treating as 'all remaining')")
                     return set()  # Empty set means "request exists, no specific seasons"
 
         # Also try matching by title if TVDB didn't match
@@ -277,14 +277,14 @@ def get_requested_seasons_from_jellyseerr(tvdb_id, title):
                         requested_seasons.add(sn)
 
                 if requested_seasons:
-                    log.info(f"  Jellyseerr: Found request for '{title}' (title match) - seasons {sorted(requested_seasons)}")
+                    log.info(f"  Seerr: Found request for '{title}' (title match) - seasons {sorted(requested_seasons)}")
                     return requested_seasons
 
-        log.info(f"  Jellyseerr: No matching request found for '{title}' (tvdbId={tvdb_id})")
+        log.info(f"  Seerr: No matching request found for '{title}' (tvdbId={tvdb_id})")
         return None
 
     except Exception as e:
-        log.warning(f"  Jellyseerr query failed: {e}")
+        log.warning(f"  Seerr query failed: {e}")
         return None
 
 
@@ -428,7 +428,7 @@ def determine_target_season(series, episodes):
     """Determine which season to fully download.
 
     Priority:
-    1. Query Jellyseerr for the actually requested season(s)
+    1. Query Seerr for the actually requested season(s)
     2. If episodes have files, use the lowest season with files
     3. Fallback to Season 1
     """
@@ -449,13 +449,13 @@ def determine_target_season(series, episodes):
     if not seasons:
         return None, set()
 
-    # 1. Ask Jellyseerr which seasons were requested
+    # 1. Ask Seerr which seasons were requested
     if tvdb_id:
-        requested = get_requested_seasons_from_jellyseerr(tvdb_id, title)
+        requested = get_requested_seasons_from_seerr(tvdb_id, title)
         if requested is not None:  # Request exists (could be empty set or populated set)
             if not requested:  # Empty set = "remaining seasons"
                 target = min(seasons - seasons_with_files) if seasons - seasons_with_files else min(seasons)
-                log.info(f"  Jellyseerr 'remaining seasons' request - defaulting to Season {target}")
+                log.info(f"  Seerr 'remaining seasons' request - defaulting to Season {target}")
                 return target, {target}
             elif requested >= seasons or len(requested) >= len(seasons):
                 # If ALL (or nearly all) seasons were requested, treat as
@@ -473,7 +473,7 @@ def determine_target_season(series, episodes):
 
     # 3. Fallback to Season 1
     target = min(seasons)
-    log.info(f"  No Jellyseerr data or files found, defaulting to Season {target}")
+    log.info(f"  No Seerr data or files found, defaulting to Season {target}")
     return target, {target}
 
 
@@ -533,7 +533,7 @@ def apply_monitoring(series_id, title, episodes, target_seasons, all_seasons):
 
 
 def process_new_series(conn, series):
-    """Set monitoring for a single new series based on Jellyseerr request."""
+    """Set monitoring for a single new series based on Seerr request."""
     series_id = series["id"]
     title = series["title"]
 
