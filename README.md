@@ -1,6 +1,10 @@
 # Media Automation for Unraid
 
-Automatically manages TV show downloads by connecting Seerr, Sonarr, Jellyfin, and SABnzbd. Instead of downloading entire series when someone makes a request, it downloads only what's needed and progressively unlocks more as people watch. When playback is detected or watch thresholds are met, downloads are automatically prioritized in SABnzbd so the next episodes are ready in time.
+Two-part automation system for a self-hosted media stack (Seerr + Sonarr/Radarr + Jellyfin + SABnzbd):
+
+**Smart download management** — When someone requests a show in Seerr, only the requested season is fully downloaded. Every other season gets just Episode 1 as a preview. As people watch, the next season is automatically unlocked: at 75% through a season, the next downloads in the background. If someone plays a preview episode, the full season is immediately prioritised in SABnzbd so E02 is ready before E01 finishes.
+
+**Automatic content discovery** — Connects to Trakt to find trending, popular, and personalised recommended content, then requests it through Seerr automatically. A configurable filtering pipeline (rating, votes, year, genre, show status, episode count) keeps the library focused. High-rated classics on your Trakt watchlist or recommendations can bypass year/status filters so nothing worth watching gets silently dropped.
 
 ## How It Works
 
@@ -182,9 +186,14 @@ All configuration is done via the `.env` file. See `.env.example` for a template
 
 ### Finding Your Seerr User ID
 
-The `SEERR_USER_ID` setting controls which Seerr user Trakt discovery requests are attributed to. This is useful if you use tools like Jellysweep that filter by request user.
+The `SEERR_USER_ID` setting controls which Seerr user Trakt discovery requests are attributed to. This matters if you use tools like Jellysweep that act on content based on who requested it.
 
-To find a user's ID, query the Seerr API:
+**Option A — Seerr web UI:**
+1. Go to **Settings → Users**
+2. Click **Edit** on the user you want
+3. The numeric ID is in the page URL: `.../settings/users/16/edit` → ID is `16`
+
+**Option B — API:**
 ```bash
 curl -s -H "X-Api-Key: YOUR_SEERR_API_KEY" "http://YOUR_SEERR_URL/api/v1/user" | python3 -c "
 import sys, json
@@ -194,7 +203,7 @@ for u in data.get('results', []):
 "
 ```
 
-Set `SEERR_USER_ID` in your `.env` to the numeric ID of the desired user. If not set, requests use the API key owner (typically admin).
+Set `SEERR_USER_ID` in your `.env` to the numeric ID of the desired user. If not set, requests are attributed to the API key owner (typically the admin account).
 
 ---
 
